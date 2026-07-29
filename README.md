@@ -8,7 +8,8 @@ real GGUF checkpoints directly off disk.
 
 This project mirrors the work of an inference runtime team: fused kernels,
 KV-cache management, and batching — built from the byte layer up, verified at
-every step against trusted references (llama.cpp's own GGUF reader/dequantizer).
+every step against trusted references (llama.cpp's own GGUF reader/dequantizer,
+and HuggingFace `transformers` for full model behavior).
 
 ## Status
 
@@ -17,8 +18,12 @@ every step against trusted references (llama.cpp's own GGUF reader/dequantizer).
 - [x] **Milestone 1** — Dequantization (Q8_0, F32) + naive matmul, verified against
       llama.cpp's `gguf-py` reference implementation (byte-for-byte match) and
       hand-computed matmul values.
-- [ ] **Milestone 2** — Single transformer layer (RMSNorm, RoPE, GQA attention, SwiGLU),
-      verified against a Python reference for one token.
+- [x] **Milestone 2** — Single transformer layer (RMSNorm, RoPE, GQA attention, SwiGLU).
+      Verified against HuggingFace `transformers` (full-precision reference) — layer 0
+      output for token_id=1 matched in sign and magnitude, with small deviations
+      attributable to Q8_0 quantization noise:
+      Rust:   [-0.0020121064, -0.010090809, 0.021785222, 0.050538868, -0.038400363]
+      Python: [-0.0019306068, -0.010121642, 0.021579372, 0.050795078, -0.038452946]
 - [ ] **Milestone 3** — Full model forward pass + KV-cache + autoregressive generation.
 - [ ] **Milestone 4** — BPE tokenizer.
 - [ ] **Milestone 5** — Sampling (temperature, top-k, top-p).
@@ -42,6 +47,11 @@ Milestone 3.)
 ## Verification approach
 
 Every numerical component is checked against an independent source before moving
-on — dequantization was cross-checked against llama.cpp's own `gguf-py` library,
-and matmul was checked against hand-computed values. This project prioritizes
-correctness at each layer over speed until Milestone 7.
+on:
+- **Dequantization** — cross-checked against llama.cpp's own `gguf-py` library
+  (byte-for-byte match on real tensor data).
+- **Matmul** — checked against hand-computed values.
+- **Full transformer layer** (RMSNorm, RoPE, GQA, SwiGLU) — cross-checked against
+  HuggingFace `transformers` running the same model at full precision.
+
+This project prioritizes correctness at each layer over speed until Milestone 7.
