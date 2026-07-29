@@ -50,4 +50,24 @@ fn main() {
     let result = tensor::matmul(&a, 2, 2, &b, 2);
     println!("\n--- matmul sanity check ---");
     println!("{:?} (expected [19, 22, 43, 50])", result);
+
+    // --- Milestone 2: run one real transformer layer on one real token ---
+    let cfg = model::load_config(&file);
+    let layer0 = model::load_layer(path, &file, 0);
+
+    // Grab this token's embedding row out of the embedding table.
+    // token_embd.weight dims are [hidden_size, vocab_size]; row for token_id
+    // is a contiguous slice of length hidden_size.
+    let embd_tensor = file.tensors.iter()
+        .find(|t| t.name == "token_embd.weight")
+        .expect("embedding tensor not found");
+    let embd_table = tensor::load_tensor(path, file.tensor_data_offset, embd_tensor);
+
+    let token_id = 1; // arbitrary token for now; real tokenizer comes in Milestone 4
+    let hidden_size = cfg.hidden_size;
+    let x = embd_table[token_id * hidden_size..(token_id + 1) * hidden_size].to_vec();
+
+    let output = model::forward_layer(&x, &layer0, &cfg);
+    println!("\n--- layer 0 output (first 5 values, token_id={token_id}) ---");
+    println!("{:?}", &output[..5]);
 }
