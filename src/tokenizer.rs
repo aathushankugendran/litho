@@ -163,31 +163,55 @@ impl Tokenizer {
     // fallback bytes are recombined into whatever UTF-8 character they
     // originally represented.
     pub fn decode(&self, token_ids: &[usize]) -> String {
-    let mut raw_bytes: Vec<u8> = Vec::new();
+        let mut raw_bytes: Vec<u8> = Vec::new();
 
-    for &id in token_ids {
-        // Skip special tokens (BOS/EOS) in the human-readable output --
-        // they're control signals for the model, not part of the text.
-        if id == self.bos_token_id || id == self.eos_token_id {
-            continue;
+        for &id in token_ids {
+            // Skip special tokens (BOS/EOS) in the human-readable output --
+            // they're control signals for the model, not part of the text.
+            if id == self.bos_token_id || id == self.eos_token_id {
+                continue;
+            }
+
+            let piece = self.id_to_token.get(id)
+                .unwrap_or_else(|| panic!("token id out of range: {id}"));
+
+            if piece.starts_with("<0x") && piece.ends_with('>') {
+                let hex = &piece[3..piece.len() - 1];
+                let byte = u8::from_str_radix(hex, 16)
+                    .unwrap_or_else(|_| panic!("malformed byte-fallback token: {piece}"));
+                raw_bytes.push(byte);
+            } else {
+                raw_bytes.extend(piece.as_bytes());
+            }
         }
 
-        let piece = self.id_to_token.get(id)
-            .unwrap_or_else(|| panic!("token id out of range: {id}"));
+        let text = String::from_utf8_lossy(&raw_bytes).into_owned();
+        text.replace(SPACE_MARKER, " ").trim_start().to_string()
+    }
+
+    // Decodes a single token to its raw display text, without the
+    // whole-string trimming that decode() applies. Used when streaming
+    // tokens one at a time, where leading spaces must be preserved so words
+    // don't run together as pieces arrive incrementally -- decode() trims
+    // leading whitespace because it's designed for a complete string, which
+    // is the wrong behavior for a single fragment of an in-progress stream.
+    pub fn decode_piece(&self, token_id: usize) -> String {
+        if token_id == self.bos_token_id || token_id == self.eos_token_id {
+            return String::new();
+        }
+
+        let piece = self.id_to_token.get(token_id)
+            .unwrap_or_else(|| panic!("token id out of range: {token_id}"));
 
         if piece.starts_with("<0x") && piece.ends_with('>') {
             let hex = &piece[3..piece.len() - 1];
             let byte = u8::from_str_radix(hex, 16)
                 .unwrap_or_else(|_| panic!("malformed byte-fallback token: {piece}"));
-            raw_bytes.push(byte);
+            String::from_utf8_lossy(&[byte]).into_owned()
         } else {
-            raw_bytes.extend(piece.as_bytes());
+            piece.replace(SPACE_MARKER, " ")
         }
     }
-
-    let text = String::from_utf8_lossy(&raw_bytes).into_owned();
-    text.replace(SPACE_MARKER, " ").trim_start().to_string()
-}
 
     pub fn bos_id(&self) -> usize {
         self.bos_token_id

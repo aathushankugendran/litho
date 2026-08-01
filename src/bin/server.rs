@@ -131,8 +131,12 @@ async fn generate(
             top_p: s.top_p,
         });
 
+        // decode_piece preserves the leading space marker on each token
+        // individually, unlike decode(), which trims whole-string leading
+        // whitespace -- necessary here since tokens arrive one at a time as
+        // fragments of an in-progress sentence, not as a complete string.
         let emit = |event: model::TokenEvent| {
-            let piece = state.tok.decode(&[event.token_id]);
+            let piece = state.tok.decode_piece(event.token_id);
             let _ = tx.blocking_send(StreamEvent {
                 step: event.step,
                 token_id: event.token_id,

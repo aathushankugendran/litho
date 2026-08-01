@@ -2,3 +2,4 @@
 *.gguf
 models/
 .DS_Store
+litho-ui/
