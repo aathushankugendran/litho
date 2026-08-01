@@ -35,4 +35,15 @@ impl KvCache {
             layers: (0..n_layers).map(|_| LayerCache::new()).collect(),
         }
     }
+
+    // Computes the cache's current memory footprint in bytes: two vectors
+    // (Key and Value) per cached position, per layer, each of size
+    // n_kv_heads * head_dim floats. This is the same formula worked out by
+    // hand earlier -- surfacing it here lets the frontend show it update
+    // live as generation proceeds.
+    pub fn memory_bytes(&self, n_kv_heads: usize, head_dim: usize) -> usize {
+        let n_positions = self.layers.first().map(|l| l.keys.len()).unwrap_or(0);
+        let n_layers = self.layers.len();
+        n_positions * n_layers * n_kv_heads * head_dim * 2 * std::mem::size_of::<f32>()
+    }
 }

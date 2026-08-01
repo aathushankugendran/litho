@@ -24,17 +24,56 @@ fn main() {
     prompt_ids.extend(tok.encode(prompt));
 
     println!("\nprompt: {prompt:?}");
-    println!("encoded token ids: {:?}", prompt_ids);
 
-    let round_trip = tok.decode(&prompt_ids);
-    println!("decoded back: {round_trip:?}");
+    // --- Streaming cached generation, greedy ---
+    // This loop is the terminal stand-in for what a live UI will eventually
+    // render: each event fires the moment a token is produced, carrying
+    // enough information to update a stats panel without waiting for the
+    // whole response.
+    println!("\n--- streaming cached generation (greedy) ---");
+    let generated = model::generate_cached_streaming(&model, &prompt_ids, 15, None, |event| {
+        let piece = tok.decode(&[event.token_id]);
+        println!(
+            "step {:<3} token_id={:<6} elapsed={:>5}ms cache={:>6}KB piece={:?}",
+            event.step,
+            event.token_id,
+            event.elapsed_ms,
+            event.cache_bytes / 1024,
+            piece
+        );
+    });
+    println!("\nfull text: {:?}", tok.decode(&generated));
 
-    let generated = model::generate_cached(&model, &prompt_ids, 10);
-    println!("\ngenerated token ids: {:?}", generated);
-    println!("generated text: {:?}", tok.decode(&generated));
-
+    // --- Streaming cached generation, sampled ---
+    println!("\n--- streaming cached generation (sampled) ---");
     let sampling = SamplingConfig { temperature: 0.8, top_k: Some(40), top_p: Some(0.9) };
-    let sampled = model::generate_cached_sampled(&model, &prompt_ids, 10, &sampling);
-    println!("\nsampled generation (temp=0.8, top_k=40, top_p=0.9): {:?}", sampled);
-    println!("sampled text: {:?}", tok.decode(&sampled));
+    let sampled = model::generate_cached_streaming(&model, &prompt_ids, 15, Some(&sampling), |event| {
+        let piece = tok.decode(&[event.token_id]);
+        println!(
+            "step {:<3} token_id={:<6} elapsed={:>5}ms cache={:>6}KB piece={:?}",
+            event.step,
+            event.token_id,
+            event.elapsed_ms,
+            event.cache_bytes / 1024,
+            piece
+        );
+    });
+    println!("\nfull text: {:?}", tok.decode(&sampled));
+
+    // --- Streaming naive generation, for comparison ---
+    // Notice cache_bytes stays 0 throughout -- naive generation never
+    // builds a cache, which is exactly the point being demonstrated.
+    println!("\n--- streaming naive generation (greedy) ---");
+    let naive = model::generate_naive_streaming(&model, &prompt_ids, 15, |event| {
+        let piece = tok.decode(&[event.token_id]);
+        println!(
+            "step {:<3} token_id={:<6} elapsed={:>5}ms cache={:>6}KB piece={:?}",
+            event.step,
+            event.token_id,
+            event.elapsed_ms,
+            event.cache_bytes / 1024,
+            piece
+        );
+    });
+    println!("\nfull text: {:?}", tok.decode(&naive));
 }

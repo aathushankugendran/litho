@@ -12,6 +12,7 @@ use crate::gguf::{GgufFile, GgufValue, TensorInfo};
 use crate::tensor::{self, matmul};
 use crate::kv_cache::{KvCache, LayerCache};
 use crate::sampler::{sample, SamplingConfig};
+use std::time::Instant;
 pub struct LayerWeights {
     pub attn_norm: Vec<f32>,
     pub attn_q: Vec<f32>,
@@ -523,6 +524,91 @@ pub fn generate_cached_sampled(
 
         let pos = prompt_ids.len() + step;
         logits = forward_cached(model, &mut cache, next_token, pos);
+    }
+
+    tokens
+}
+
+// One generated token's worth of progress information, handed to the
+// caller's callback after every step. This is the data a live UI needs to
+// update its stats panel and append text without waiting for the whole
+// generation to finish.
+pub struct TokenEvent {
+    pub step: usize,
+    pub token_id: usize,
+    pub elapsed_ms: u128,
+    pub cache_bytes: usize, // 0 for naive generation, which has no cache
+}
+
+// Same behavior as generate_naive, but invokes `on_token` after every
+// generated token instead of only returning a result at the very end. This
+// is what makes "live stats while generating" possible -- the caller (a
+// terminal printout today, an HTTP server later) decides what to do with
+// each event as it arrives, without generation needing to know anything
+// about servers, sockets, or UIs.
+pub fn generate_naive_streaming(
+    model: &Model,
+    prompt_ids: &[usize],
+    n_new_tokens: usize,
+    mut on_token: impl FnMut(TokenEvent),
+) -> Vec<usize> {
+    let start = Instant::now();
+    let mut tokens = prompt_ids.to_vec();
+
+    for step in 0..n_new_tokens {
+        let logits = forward(model, &tokens);
+        let next_token = argmax(&logits);
+        tokens.push(next_token);
+
+        on_token(TokenEvent {
+            step: step + 1,
+            token_id: next_token,
+            elapsed_ms: start.elapsed().as_millis(),
+            cache_bytes: 0,
+        });
+    }
+
+    tokens
+}
+
+// Same behavior as generate_cached / generate_cached_sampled, but streams
+// per-token progress through a callback. Passing `sampling: None` behaves
+// like greedy argmax; `Some(config)` samples using that configuration.
+// Also reports the KV-cache's real memory footprint after every step, so a
+// live UI can show it growing in real time.
+pub fn generate_cached_streaming(
+    model: &Model,
+    prompt_ids: &[usize],
+    n_new_tokens: usize,
+    sampling: Option<&SamplingConfig>,
+    mut on_token: impl FnMut(TokenEvent),
+) -> Vec<usize> {
+    let start = Instant::now();
+    let mut cache = KvCache::new(model.config.n_layers);
+    let mut tokens = prompt_ids.to_vec();
+    let mut logits = Vec::new();
+
+    for (pos, &token_id) in prompt_ids.iter().enumerate() {
+        logits = forward_cached(model, &mut cache, token_id, pos);
+    }
+
+    for step in 0..n_new_tokens {
+        let next_token = match sampling {
+            Some(cfg) => sample(&logits, cfg),
+            None => argmax(&logits),
+        };
+        tokens.push(next_token);
+
+        let pos = prompt_ids.len() + step;
+        logits = forward_cached(model, &mut cache, next_token, pos);
+
+        let cache_bytes = cache.memory_bytes(model.config.n_kv_heads, model.config.head_dim);
+        on_token(TokenEvent {
+            step: step + 1,
+            token_id: next_token,
+            elapsed_ms: start.elapsed().as_millis(),
+            cache_bytes,
+        });
     }
 
     tokens
