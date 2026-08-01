@@ -7,9 +7,10 @@
 // easy-to-verify baseline before we introduce the KV-cache optimization,
 // which must produce identical output while doing less work.
 
+
 use crate::gguf::{GgufFile, GgufValue, TensorInfo};
 use crate::tensor::{self, matmul};
-
+use crate::kv_cache::{KvCache, LayerCache};
 pub struct LayerWeights {
     pub attn_norm: Vec<f32>,
     pub attn_q: Vec<f32>,
@@ -356,6 +357,144 @@ pub fn generate_naive(model: &Model, prompt_ids: &[usize], n_new_tokens: usize) 
         let next_token = argmax(&logits);
         tokens.push(next_token);
         println!("  step {}/{n_new_tokens}: generated token {next_token}", step + 1);
+    }
+
+    tokens
+}
+
+// --- Causal grouped-query attention for a single new token, using a KV-cache ---
+//
+// Compare this to attention_naive, which loops over every position in the
+// whole sequence and recomputes Q, K, and V for all of them on every call.
+// Here, only the one new position (`x`) gets a fresh Q, K, and V computed.
+// The new K and V are appended to the cache, and the new Q is compared
+// against every K in the cache -- the ones computed just now, and every one
+// computed on earlier calls. The math for any given position is identical
+// to attention_naive; only the amount of repeated work differs.
+fn attention_cached(
+    x: &[f32],
+    w: &LayerWeights,
+    cfg: &Config,
+    cache: &mut LayerCache,
+    pos: usize,
+) -> Vec<f32> {
+    let group_size = cfg.n_heads / cfg.n_kv_heads;
+
+    let q = linear(&w.attn_q, w.attn_q_dims, x);
+    let k = linear(&w.attn_k, w.attn_k_dims, x);
+    let v = linear(&w.attn_v, w.attn_v_dims, x);
+
+    let mut q_per_head: Vec<Vec<f32>> = (0..cfg.n_heads)
+        .map(|h| q[h * cfg.head_dim..(h + 1) * cfg.head_dim].to_vec())
+        .collect();
+    let mut k_per_head: Vec<Vec<f32>> = (0..cfg.n_kv_heads)
+        .map(|h| k[h * cfg.head_dim..(h + 1) * cfg.head_dim].to_vec())
+        .collect();
+    let v_per_head: Vec<Vec<f32>> = (0..cfg.n_kv_heads)
+        .map(|h| v[h * cfg.head_dim..(h + 1) * cfg.head_dim].to_vec())
+        .collect();
+
+    for qh in q_per_head.iter_mut() {
+        apply_rope(qh, pos, cfg.head_dim);
+    }
+    for kh in k_per_head.iter_mut() {
+        apply_rope(kh, pos, cfg.head_dim);
+    }
+
+    // This push is the entire point of the cache: append the new position's
+    // K/V, never recompute an old position's K/V.
+    cache.keys.push(k_per_head);
+    cache.values.push(v_per_head);
+
+    let mut head_outputs = vec![0f32; cfg.n_heads * cfg.head_dim];
+
+    for h in 0..cfg.n_heads {
+        let kv_h = h / group_size;
+        let qh = &q_per_head[h];
+
+        // Attend over every cached position up to and including this one --
+        // same causal restriction as attention_naive, just against a cache
+        // instead of a freshly recomputed list.
+        let mut scores: Vec<f32> = (0..=pos)
+            .map(|j| {
+                let kh = &cache.keys[j][kv_h];
+                let dot: f32 = qh.iter().zip(kh.iter()).map(|(a, b)| a * b).sum();
+                dot / (cfg.head_dim as f32).sqrt()
+            })
+            .collect();
+
+        softmax(&mut scores);
+
+        let mut weighted_sum = vec![0f32; cfg.head_dim];
+        for (j, &weight) in scores.iter().enumerate() {
+            let vh = &cache.values[j][kv_h];
+            for d in 0..cfg.head_dim {
+                weighted_sum[d] += weight * vh[d];
+            }
+        }
+
+        head_outputs[h * cfg.head_dim..(h + 1) * cfg.head_dim]
+            .copy_from_slice(&weighted_sum);
+    }
+
+    linear(&w.attn_output, w.attn_output_dims, &head_outputs)
+}
+
+// One transformer layer applied to a single new token, reading from and
+// writing to this layer's cache. Structurally identical to forward_layer,
+// just operating on one hidden-state vector instead of a whole sequence.
+fn forward_layer_cached(
+    x: &[f32],
+    w: &LayerWeights,
+    cfg: &Config,
+    cache: &mut LayerCache,
+    pos: usize,
+) -> Vec<f32> {
+    let normed = rms_norm(x, &w.attn_norm, cfg.rms_eps);
+    let attn_out = attention_cached(&normed, w, cfg, cache, pos);
+    let residual1: Vec<f32> = x.iter().zip(attn_out.iter()).map(|(v, a)| v + a).collect();
+
+    let normed2 = rms_norm(&residual1, &w.ffn_norm, cfg.rms_eps);
+    let mlp_out = swiglu_mlp(&normed2, w);
+    residual1.iter().zip(mlp_out.iter()).map(|(v, m)| v + m).collect()
+}
+
+// Runs a single token through every layer of the model, using and updating
+// the KV-cache at each layer. Returns logits for this one position, which is
+// all generation ever needs -- the score distribution over the vocabulary
+// for whatever token comes next.
+pub fn forward_cached(model: &Model, cache: &mut KvCache, token_id: usize, pos: usize) -> Vec<f32> {
+    let mut x = embed_token(model, token_id);
+
+    for (layer, layer_cache) in model.layers.iter().zip(cache.layers.iter_mut()) {
+        x = forward_layer_cached(&x, layer, &model.config, layer_cache, pos);
+    }
+
+    let normed = rms_norm(&x, &model.output_norm, model.config.rms_eps);
+    linear(&model.output_weight, model.output_dims, &normed)
+}
+
+// Autoregressive generation using the KV-cache. Every prompt token is fed
+// through once, in order, to populate the cache; each newly generated token
+// is then fed through one at a time, reusing every previously cached K/V
+// instead of recomputing them. This must produce identical token IDs to
+// generate_naive given the same inputs -- the cache changes how much work
+// gets repeated, never what the model actually computes.
+pub fn generate_cached(model: &Model, prompt_ids: &[usize], n_new_tokens: usize) -> Vec<usize> {
+    let mut cache = KvCache::new(model.config.n_layers);
+    let mut tokens = prompt_ids.to_vec();
+    let mut logits = Vec::new();
+
+    for (pos, &token_id) in prompt_ids.iter().enumerate() {
+        logits = forward_cached(model, &mut cache, token_id, pos);
+    }
+
+    for step in 0..n_new_tokens {
+        let next_token = argmax(&logits);
+        tokens.push(next_token);
+
+        let pos = prompt_ids.len() + step;
+        logits = forward_cached(model, &mut cache, next_token, pos);
     }
 
     tokens
