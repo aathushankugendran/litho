@@ -11,6 +11,7 @@
 use crate::gguf::{GgufFile, GgufValue, TensorInfo};
 use crate::tensor::{self, matmul};
 use crate::kv_cache::{KvCache, LayerCache};
+use crate::sampler::{sample, SamplingConfig};
 pub struct LayerWeights {
     pub attn_norm: Vec<f32>,
     pub attn_q: Vec<f32>,
@@ -491,6 +492,33 @@ pub fn generate_cached(model: &Model, prompt_ids: &[usize], n_new_tokens: usize)
 
     for step in 0..n_new_tokens {
         let next_token = argmax(&logits);
+        tokens.push(next_token);
+
+        let pos = prompt_ids.len() + step;
+        logits = forward_cached(model, &mut cache, next_token, pos);
+    }
+
+    tokens
+}
+// Same as generate_cached, but picks each next token via a configurable
+// sampling strategy instead of always taking the single highest-scoring
+// token. This is what makes generated text feel varied instead of robotic.
+pub fn generate_cached_sampled(
+    model: &Model,
+    prompt_ids: &[usize],
+    n_new_tokens: usize,
+    sampling: &SamplingConfig,
+) -> Vec<usize> {
+    let mut cache = KvCache::new(model.config.n_layers);
+    let mut tokens = prompt_ids.to_vec();
+    let mut logits = Vec::new();
+
+    for (pos, &token_id) in prompt_ids.iter().enumerate() {
+        logits = forward_cached(model, &mut cache, token_id, pos);
+    }
+
+    for step in 0..n_new_tokens {
+        let next_token = sample(&logits, sampling);
         tokens.push(next_token);
 
         let pos = prompt_ids.len() + step;
