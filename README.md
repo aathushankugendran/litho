@@ -17,7 +17,7 @@ and HuggingFace `transformers` for full model behavior).
 - [x] **Milestone 1** — Dequantization (Q8_0, F32) + naive matmul, verified against llama.cpp's `gguf-py` reference implementation (byte-for-byte match) and hand-computed matmul values.
 - [x] **Milestone 2** — Single transformer layer (RMSNorm, RoPE, GQA attention, SwiGLU), verified against HuggingFace `transformers` for one token. See details below.
 - [x] **Milestone 3** — Full 22-layer model forward pass, autoregressive generation, and KV-cache. Verified against HuggingFace `transformers` greedy decoding (exact token match), and the KV-cache version verified against this repo's own naive baseline (exact token match). See details below.
-- [ ] **Milestone 4** — BPE tokenizer.
+- [x] **Milestone 4** — BPE tokenizer (SentencePiece-style, with byte-fallback for unknown characters), verified via exact round-trip and first coherent end-to-end text generation. See details below.
 - [ ] **Milestone 5** — Sampling (temperature, top-k, top-p).
 - [ ] **Milestone 6** — Batching + benchmark harness (tokens/sec at batch 1/4/16, memory).
 - [ ] **Milestone 7** — Performance optimization (BLAS/Metal) + comparison vs llama.cpp.
@@ -73,6 +73,33 @@ generation runs.
 (These are single-run wall-clock measurements on one machine, meant to
 illustrate the trend — Milestone 6 adds a proper benchmarking harness with
 repeated trials.)
+
+### Milestone 4 verification detail
+
+**Tokenizer round-trip** — encoding then decoding the same text must
+reproduce it exactly, since encode and decode are meant to be exact inverse
+operations:
+
+| Step | Value |
+|---|---|
+| Input prompt | `"The capital of France is"` |
+| Encoded token IDs | `[1, 450, 7483, 310, 3444, 338]` |
+| Decoded back | `"The capital of France is"` |
+
+Exact match (token ID `1` is the BOS special token, correctly stripped out
+of the human-readable decoded text).
+
+**First real end-to-end generation** — same prompt, fed through the full
+tokenizer → 22-layer model → KV-cache → tokenizer pipeline, with greedy
+decoding:
+
+> **Prompt:** "The capital of France is"
+> **Generated:** "The capital of France is Paris, which is the capital of France."
+
+This is the first point in the project where raw text goes in and
+coherent, readable text comes out, using only this repo's own GGUF parser,
+dequantization, transformer math, KV-cache, and tokenizer — no external ML
+libraries anywhere in the pipeline.
 
 ## Model used for development
 
