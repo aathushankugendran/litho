@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0b0d10;
+  --panel: #14171c;
+  --border: #262b33;
+  --text: #e7e5e0;
+  --text-dim: #8b92a0;
+  --amber: #ffb000;
+  --cyan: #4fd6e8;
+  --rust: #e5484d;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", sans-serif;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}

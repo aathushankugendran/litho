@@ -2,4 +2,5 @@
 *.gguf
 models/
 .DS_Store
-litho-ui/
+litho-ui/node_modules
+litho-ui/dist
