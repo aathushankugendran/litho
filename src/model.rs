@@ -501,6 +501,7 @@ pub fn generate_cached(model: &Model, prompt_ids: &[usize], n_new_tokens: usize)
 
     tokens
 }
+
 // Same as generate_cached, but picks each next token via a configurable
 // sampling strategy instead of always taking the single highest-scoring
 // token. This is what makes generated text feel varied instead of robotic.
@@ -541,15 +542,14 @@ pub struct TokenEvent {
 }
 
 // Same behavior as generate_naive, but invokes `on_token` after every
-// generated token instead of only returning a result at the very end. This
-// is what makes "live stats while generating" possible -- the caller (a
-// terminal printout today, an HTTP server later) decides what to do with
-// each event as it arrives, without generation needing to know anything
-// about servers, sockets, or UIs.
+// generated token instead of only returning a result at the very end, and
+// stops early if the model produces its own end-of-sequence token instead
+// of always running for the full requested length regardless.
 pub fn generate_naive_streaming(
     model: &Model,
     prompt_ids: &[usize],
     n_new_tokens: usize,
+    eos_id: usize,
     mut on_token: impl FnMut(TokenEvent),
 ) -> Vec<usize> {
     let start = Instant::now();
@@ -566,21 +566,27 @@ pub fn generate_naive_streaming(
             elapsed_ms: start.elapsed().as_millis(),
             cache_bytes: 0,
         });
+
+        if next_token == eos_id {
+            break;
+        }
     }
 
     tokens
 }
 
 // Same behavior as generate_cached / generate_cached_sampled, but streams
-// per-token progress through a callback. Passing `sampling: None` behaves
-// like greedy argmax; `Some(config)` samples using that configuration.
-// Also reports the KV-cache's real memory footprint after every step, so a
-// live UI can show it growing in real time.
+// per-token progress through a callback, and stops early on an
+// end-of-sequence token rather than always running the full requested
+// length. Passing `sampling: None` behaves like greedy argmax; `Some(config)`
+// samples using that configuration. Also reports the KV-cache's real memory
+// footprint after every step, so a live UI can show it growing in real time.
 pub fn generate_cached_streaming(
     model: &Model,
     prompt_ids: &[usize],
     n_new_tokens: usize,
     sampling: Option<&SamplingConfig>,
+    eos_id: usize,
     mut on_token: impl FnMut(TokenEvent),
 ) -> Vec<usize> {
     let start = Instant::now();
@@ -609,6 +615,10 @@ pub fn generate_cached_streaming(
             elapsed_ms: start.elapsed().as_millis(),
             cache_bytes,
         });
+
+        if next_token == eos_id {
+            break;
+        }
     }
 
     tokens

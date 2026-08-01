@@ -31,7 +31,7 @@ fn main() {
     // enough information to update a stats panel without waiting for the
     // whole response.
     println!("\n--- streaming cached generation (greedy) ---");
-    let generated = model::generate_cached_streaming(&model, &prompt_ids, 15, None, |event| {
+    let generated = model::generate_cached_streaming(&model, &prompt_ids, 15, None, tok.eos_id(), |event| {
         let piece = tok.decode(&[event.token_id]);
         println!(
             "step {:<3} token_id={:<6} elapsed={:>5}ms cache={:>6}KB piece={:?}",
@@ -47,7 +47,7 @@ fn main() {
     // --- Streaming cached generation, sampled ---
     println!("\n--- streaming cached generation (sampled) ---");
     let sampling = SamplingConfig { temperature: 0.8, top_k: Some(40), top_p: Some(0.9) };
-    let sampled = model::generate_cached_streaming(&model, &prompt_ids, 15, Some(&sampling), |event| {
+    let sampled = model::generate_cached_streaming(&model, &prompt_ids, 15, Some(&sampling), tok.eos_id(), |event| {
         let piece = tok.decode(&[event.token_id]);
         println!(
             "step {:<3} token_id={:<6} elapsed={:>5}ms cache={:>6}KB piece={:?}",
@@ -64,7 +64,7 @@ fn main() {
     // Notice cache_bytes stays 0 throughout -- naive generation never
     // builds a cache, which is exactly the point being demonstrated.
     println!("\n--- streaming naive generation (greedy) ---");
-    let naive = model::generate_naive_streaming(&model, &prompt_ids, 15, |event| {
+    let naive = model::generate_naive_streaming(&model, &prompt_ids, 15, tok.eos_id(), |event| {
         let piece = tok.decode(&[event.token_id]);
         println!(
             "step {:<3} token_id={:<6} elapsed={:>5}ms cache={:>6}KB piece={:?}",
