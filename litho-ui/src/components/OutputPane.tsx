@@ -17,7 +17,7 @@ const STAT_NOTES: Record<string, string> = {
 };
 
 export function OutputPane({ events, isRunning, label = "output", accent = "var(--amber)" }: Props) {
-  const text = events.map((e) => e.piece).join("");
+  const text = events.map((e) => e.piece).join("").replace(/\s+$/, "");
   const last = events[events.length - 1];
   const tokensPerSec =
     last && last.elapsed_ms > 0 ? (last.step / (last.elapsed_ms / 1000)).toFixed(2) : "—";
