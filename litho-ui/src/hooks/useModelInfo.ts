@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ModelInfo } from "../types";
 
-const API_BASE = "http://localhost:3000";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:3000";
 
 export function useModelInfo() {
   const [info, setInfo] = useState<ModelInfo | null>(null);

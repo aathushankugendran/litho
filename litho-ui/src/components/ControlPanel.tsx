@@ -62,12 +62,12 @@ export function ControlPanel({ onRun, isRunning }: Props) {
         <label className="mono mb-1 block text-xs text-[var(--text-dim)]">
           how it handles previous tokens
         </label>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-3 gap-1.5 text-[11px] sm:gap-2 sm:text-xs">
           {modes.map((m) => (
             <button
               key={m.key}
               onClick={() => setMode(m.key)}
-              className="mono rounded border px-2 py-1.5 text-xs transition-colors"
+              className="mono rounded border px-2 py-1.5 transition-colors"
               style={{
                 borderColor: mode === m.key ? m.accent : "var(--border)",
                 color: mode === m.key ? m.accent : "var(--text-dim)",

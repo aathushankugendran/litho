@@ -25,7 +25,7 @@ export function ModelInfoBar({ info }: { info: ModelInfo | null }) {
     : [];
 
   return (
-    <header className="border-b border-[var(--border)] bg-[var(--panel)] px-6 py-4">
+    <header className="border-b border-[var(--border)] bg-[var(--panel)] px-4 py-3 sm:px-6 sm:py-4">
       <div className="mx-auto max-w-6xl">
         <div className="mono flex flex-wrap items-center gap-x-3">
           <span className="text-base font-semibold tracking-wide text-[var(--amber)]">litho</span>
@@ -62,7 +62,7 @@ export function ModelInfoBar({ info }: { info: ModelInfo | null }) {
 }
 
 // A click-to-open explainer for the quantization format. Kept as a popover
-// rather than a tooltip because the content is a few sentences plus a link,
+// rather than a tooltip because the content is a few sentences plus links,
 // which is too much for a hover target.
 function QuantizationHelp({ quantization }: { quantization: string }) {
   const [open, setOpen] = useState(false);
@@ -100,7 +100,7 @@ function QuantizationHelp({ quantization }: { quantization: string }) {
       </button>
 
       {open && (
-        <div className="absolute left-0 top-6 z-20 w-80 rounded border border-[var(--border)] bg-[var(--panel)] p-4 shadow-xl">
+        <div className="absolute left-0 top-6 z-20 w-80 max-w-[85vw] rounded border border-[var(--border)] bg-[var(--panel)] p-4 shadow-xl">
           <div className="mono mb-2 text-xs text-[var(--cyan)]">{quantization} quantization</div>
 
           <p className="mb-3 text-xs leading-relaxed text-[var(--text-dim)]">

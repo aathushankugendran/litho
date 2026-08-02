@@ -65,7 +65,7 @@ export default function App() {
   return (
     <div className="min-h-screen">
       <ModelInfoBar info={info} />
-      <main className="mx-auto flex max-w-6xl flex-col gap-6 p-6">
+      <main className="mx-auto flex max-w-6xl flex-col gap-4 p-4 sm:gap-6 sm:p-6">
         <div className="grid grid-cols-1 gap-6 md:grid-cols-[320px_1fr]">
           <ControlPanel onRun={handleRun} isRunning={isRunning} />
 
