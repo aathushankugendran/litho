@@ -4,7 +4,7 @@ A from-scratch transformer inference engine, written entirely in Rust — no PyT
 
 Every numerical component in this project is independently verified against a trusted reference before being built upon — not just "it compiles and looks right."
 
-**Live dashboard:** [litho](https://main.d2jztxcsysdow0.amplifyapp.com/) — [frontend source](https://github.com/aathushankugendran/litho-ui) (React/TypeScript, streams generation in real time)
+**Live dashboard:** [litho](https://main.d2jztxcsysdow0.amplifyapp.com/) (React/TypeScript, streams generation in real time)
 
 ---
 
