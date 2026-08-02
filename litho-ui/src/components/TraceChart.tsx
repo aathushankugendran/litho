@@ -1,8 +1,12 @@
 import type { StreamEvent } from "../types";
 
 interface Props {
-  cachedEvents: StreamEvent[];
-  naiveEvents: StreamEvent[];
+  // Race mode: both provided. Single mode: only `primary` provided.
+  cachedEvents?: StreamEvent[];
+  naiveEvents?: StreamEvent[];
+  primary?: StreamEvent[];
+  primaryLabel?: string;
+  primaryAccent?: string;
 }
 
 const WIDTH = 640;
@@ -35,8 +39,30 @@ function formatMs(ms: number) {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
 }
 
-export function TraceChart({ cachedEvents, naiveEvents }: Props) {
-  const allEvents = [...cachedEvents, ...naiveEvents];
+export function TraceChart({
+  cachedEvents = [],
+  naiveEvents = [],
+  primary = [],
+  primaryLabel = "elapsed",
+  primaryAccent = "var(--amber)",
+}: Props) {
+  const isRaceMode = cachedEvents.length > 0 || naiveEvents.length > 0;
+  const allEvents = isRaceMode ? [...cachedEvents, ...naiveEvents] : primary;
+
+  // Nothing to plot yet in either mode -- show a placeholder instead of an
+  // empty chart with default 0-1 axes, which reads as broken rather than
+  // "waiting for data."
+  if (allEvents.length === 0) {
+    return (
+      <div className="rounded border border-[var(--border)] bg-[var(--panel)] p-4">
+        <div className="mono mb-2 text-xs text-[var(--text-dim)]">elapsed time per token</div>
+        <div className="flex h-[140px] items-center justify-center text-xs text-[var(--text-dim)]">
+          Run a generation to see the trace.
+        </div>
+      </div>
+    );
+  }
+
   const maxStep = Math.max(...allEvents.map((e) => e.step), 1);
   const maxMs = Math.max(...allEvents.map((e) => e.elapsed_ms), 1000);
 
@@ -48,14 +74,21 @@ export function TraceChart({ cachedEvents, naiveEvents }: Props) {
 
   const cachedLast = cachedEvents[cachedEvents.length - 1];
   const naiveLast = naiveEvents[naiveEvents.length - 1];
+  const primaryLast = primary[primary.length - 1];
 
   return (
     <div className="rounded border border-[var(--border)] bg-[var(--panel)] p-4">
       <div className="mono mb-2 flex items-center justify-between text-xs text-[var(--text-dim)]">
         <span>elapsed time per token</span>
         <span className="flex gap-4">
-          <span className="text-[var(--cyan)]">■ naive</span>
-          <span className="text-[var(--amber)]">■ cached</span>
+          {isRaceMode ? (
+            <>
+              <span className="text-[var(--cyan)]">■ naive</span>
+              <span className="text-[var(--amber)]">■ cached</span>
+            </>
+          ) : (
+            <span style={{ color: primaryAccent }}>■ {primaryLabel}</span>
+          )}
         </span>
       </div>
       <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="w-full">
@@ -111,39 +144,66 @@ export function TraceChart({ cachedEvents, naiveEvents }: Props) {
           token step
         </text>
 
-        <path d={pathFor(naiveEvents, maxStep, maxMs)} fill="none" stroke="var(--cyan)" strokeWidth={2} />
-        <path d={pathFor(cachedEvents, maxStep, maxMs)} fill="none" stroke="var(--amber)" strokeWidth={2} />
+        {isRaceMode ? (
+          <>
+            <path d={pathFor(naiveEvents, maxStep, maxMs)} fill="none" stroke="var(--cyan)" strokeWidth={2} />
+            <path d={pathFor(cachedEvents, maxStep, maxMs)} fill="none" stroke="var(--amber)" strokeWidth={2} />
 
-        {/* finish markers -- a filled dot plus elapsed time at the last point of each trace */}
-        {naiveLast && (
-          <g>
-            <circle cx={pointFor(naiveLast, maxStep, maxMs).x} cy={pointFor(naiveLast, maxStep, maxMs).y} r={3.5} fill="var(--cyan)" />
-            <text
-              x={pointFor(naiveLast, maxStep, maxMs).x}
-              y={pointFor(naiveLast, maxStep, maxMs).y - 8}
-              textAnchor="end"
-              fontSize={10}
-              fill="var(--cyan)"
-              className="mono"
-            >
-              {formatMs(naiveLast.elapsed_ms)}
-            </text>
-          </g>
-        )}
-        {cachedLast && (
-          <g>
-            <circle cx={pointFor(cachedLast, maxStep, maxMs).x} cy={pointFor(cachedLast, maxStep, maxMs).y} r={3.5} fill="var(--amber)" />
-            <text
-              x={pointFor(cachedLast, maxStep, maxMs).x}
-              y={pointFor(cachedLast, maxStep, maxMs).y + 14}
-              textAnchor="end"
-              fontSize={10}
-              fill="var(--amber)"
-              className="mono"
-            >
-              {formatMs(cachedLast.elapsed_ms)}
-            </text>
-          </g>
+            {naiveLast && (
+              <g>
+                <circle cx={pointFor(naiveLast, maxStep, maxMs).x} cy={pointFor(naiveLast, maxStep, maxMs).y} r={3.5} fill="var(--cyan)" />
+                <text
+                  x={pointFor(naiveLast, maxStep, maxMs).x}
+                  y={pointFor(naiveLast, maxStep, maxMs).y - 8}
+                  textAnchor="end"
+                  fontSize={10}
+                  fill="var(--cyan)"
+                  className="mono"
+                >
+                  {formatMs(naiveLast.elapsed_ms)}
+                </text>
+              </g>
+            )}
+            {cachedLast && (
+              <g>
+                <circle cx={pointFor(cachedLast, maxStep, maxMs).x} cy={pointFor(cachedLast, maxStep, maxMs).y} r={3.5} fill="var(--amber)" />
+                <text
+                  x={pointFor(cachedLast, maxStep, maxMs).x}
+                  y={pointFor(cachedLast, maxStep, maxMs).y + 14}
+                  textAnchor="end"
+                  fontSize={10}
+                  fill="var(--amber)"
+                  className="mono"
+                >
+                  {formatMs(cachedLast.elapsed_ms)}
+                </text>
+              </g>
+            )}
+          </>
+        ) : (
+          <>
+            <path d={pathFor(primary, maxStep, maxMs)} fill="none" stroke={primaryAccent} strokeWidth={2} />
+            {primaryLast && (
+              <g>
+                <circle
+                  cx={pointFor(primaryLast, maxStep, maxMs).x}
+                  cy={pointFor(primaryLast, maxStep, maxMs).y}
+                  r={3.5}
+                  fill={primaryAccent}
+                />
+                <text
+                  x={pointFor(primaryLast, maxStep, maxMs).x}
+                  y={pointFor(primaryLast, maxStep, maxMs).y - 8}
+                  textAnchor="end"
+                  fontSize={10}
+                  fill={primaryAccent}
+                  className="mono"
+                >
+                  {formatMs(primaryLast.elapsed_ms)}
+                </text>
+              </g>
+            )}
+          </>
         )}
       </svg>
     </div>

@@ -17,6 +17,7 @@ export default function App() {
   const [singleEvents, setSingleEvents] = useState<StreamEvent[]>([]);
   const [isRunningSingle, setIsRunningSingle] = useState(false);
   const [singleAccent, setSingleAccent] = useState("var(--amber)");
+  const [singleLabel, setSingleLabel] = useState("cached");
 
   const [naiveEvents, setNaiveEvents] = useState<StreamEvent[]>([]);
   const [cachedEvents, setCachedEvents] = useState<StreamEvent[]>([]);
@@ -51,6 +52,7 @@ export default function App() {
     }
 
     setSingleAccent(mode === "naive" ? "var(--cyan)" : "var(--amber)");
+    setSingleLabel(mode);
     setIsRunningSingle(true);
     const sampling = sampled ? { temperature, top_k: topK, top_p: topP } : null;
     try {
@@ -77,11 +79,14 @@ export default function App() {
                   <OutputPane events={naiveEvents} isRunning={isRacing} label="naive" accent="var(--cyan)" />
                 </div>
                 <RaceSummary cachedEvents={cachedEvents} naiveEvents={naiveEvents} />
+                <TraceChart cachedEvents={cachedEvents} naiveEvents={naiveEvents} />
               </>
             ) : (
-              <OutputPane events={singleEvents} isRunning={isRunningSingle} accent={singleAccent} />
+              <>
+                <OutputPane events={singleEvents} isRunning={isRunningSingle} accent={singleAccent} />
+                <TraceChart primary={singleEvents} primaryLabel={singleLabel} primaryAccent={singleAccent} />
+              </>
             )}
-            <TraceChart cachedEvents={cachedEvents} naiveEvents={naiveEvents} />
           </div>
         </div>
       </main>
