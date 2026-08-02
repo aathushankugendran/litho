@@ -26,16 +26,32 @@ use model::Model;
 use sampler::SamplingConfig;
 use tokenizer::Tokenizer;
 
+// Maps a GGML tensor dtype id to its human-readable quantization name.
+// Only covers the types this project actually implements dequantization
+// for; anything else is reported honestly as "unknown" rather than guessed.
+fn dtype_name(dtype: u32) -> &'static str {
+    match dtype {
+        0 => "F32",
+        1 => "F16",
+        8 => "Q8_0",
+        _ => "unknown",
+    }
+}
+
 // Shared, read-only state every request has access to. Wrapped in an Arc so
 // multiple concurrent requests can all read the same in-memory model
 // without copying it.
 struct AppState {
     model: Model,
     tok: Tokenizer,
+    model_name: String,
+    quantization: String,
 }
 
 #[derive(Serialize)]
 struct ModelInfo {
+    name: String,
+    quantization: String,
     n_layers: usize,
     hidden_size: usize,
     n_heads: usize,
@@ -77,6 +93,21 @@ async fn main() {
 
     println!("Loading model...");
     let file = gguf::parse(path).expect("failed to parse GGUF file");
+
+    // Pull the model's display name straight from GGUF metadata rather than
+    // hardcoding it, so this stays accurate if the model file changes.
+    let model_name = file.metadata.iter()
+        .find(|(k, _)| k == "general.name")
+        .and_then(|(_, v)| if let gguf::GgufValue::String(s) = v { Some(s.clone()) } else { None })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Quantization is read off one representative weight tensor -- most
+    // Llama-style GGUF checkpoints quantize all large matrices the same way.
+    let quantization = file.tensors.iter()
+        .find(|t| t.name == "blk.0.attn_q.weight")
+        .map(|t| dtype_name(t.dtype).to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
     let model = model::load_model(path, &file);
     let tok = tokenizer::load_tokenizer(&file);
     println!(
@@ -84,7 +115,7 @@ async fn main() {
         model.config.n_layers, model.config.hidden_size, model.config.vocab_size
     );
 
-    let state = Arc::new(AppState { model, tok });
+    let state = Arc::new(AppState { model, tok, model_name, quantization });
 
     let app = Router::new()
         .route("/model-info", get(model_info))
@@ -100,6 +131,8 @@ async fn main() {
 async fn model_info(State(state): State<Arc<AppState>>) -> Json<ModelInfo> {
     let cfg = &state.model.config;
     Json(ModelInfo {
+        name: state.model_name.clone(),
+        quantization: state.quantization.clone(),
         n_layers: cfg.n_layers,
         hidden_size: cfg.hidden_size,
         n_heads: cfg.n_heads,

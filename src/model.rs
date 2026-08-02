@@ -13,6 +13,7 @@ use crate::tensor::{self, matmul};
 use crate::kv_cache::{KvCache, LayerCache};
 use crate::sampler::{sample, SamplingConfig};
 use std::time::Instant;
+use crate::kv_cache::BatchKvCache;
 pub struct LayerWeights {
     pub attn_norm: Vec<f32>,
     pub attn_q: Vec<f32>,
@@ -622,4 +623,273 @@ pub fn generate_cached_streaming(
     }
 
     tokens
+}
+// --- Batched inference ---
+//
+// The reason batching helps is memory bandwidth, not arithmetic. Generating
+// one token requires reading all ~1.1B weights out of memory and using each
+// one exactly once, so the processor spends most of its time waiting on
+// memory rather than computing. Batching several sequences together reads
+// those same weights once but uses each one `batch_size` times, amortizing
+// the expensive part across more useful work.
+//
+// Concretely, every projection changes from `W * one_vector` to
+// `W * matrix_of_batch_vectors` -- the same matmul with a wider right-hand
+// side, which is why matmul was written with an `n` parameter from the start.
+
+// A batch of hidden states, stored column-major: element (row, seq) lives at
+// data[row * batch_size + seq]. This layout is what matmul expects for its
+// right-hand operand, so batched projections need no repacking.
+pub struct BatchState {
+    pub data: Vec<f32>,
+    pub rows: usize,
+    pub batch_size: usize,
+}
+
+impl BatchState {
+    fn from_vectors(vectors: &[Vec<f32>]) -> Self {
+        let batch_size = vectors.len();
+        let rows = vectors[0].len();
+        let mut data = vec![0f32; rows * batch_size];
+        for (seq, v) in vectors.iter().enumerate() {
+            for (row, &value) in v.iter().enumerate() {
+                data[row * batch_size + seq] = value;
+            }
+        }
+        BatchState { data, rows, batch_size }
+    }
+
+    fn column(&self, seq: usize) -> Vec<f32> {
+        (0..self.rows).map(|row| self.data[row * self.batch_size + seq]).collect()
+    }
+
+    fn set_column(&mut self, seq: usize, values: &[f32]) {
+        for (row, &value) in values.iter().enumerate() {
+            self.data[row * self.batch_size + seq] = value;
+        }
+    }
+}
+
+// Batched linear projection: one matmul covering every sequence at once,
+// rather than `batch_size` separate matmuls. This is where the bandwidth
+// amortization actually happens -- the weight matrix is read once and
+// applied across all columns.
+fn linear_batched(weight: &[f32], dims: (usize, usize), x: &BatchState) -> BatchState {
+    let (in_dim, out_dim) = dims;
+    assert_eq!(x.rows, in_dim, "input dim mismatch for batched linear layer");
+
+    let data = matmul(weight, out_dim, in_dim, &x.data, x.batch_size);
+    BatchState { data, rows: out_dim, batch_size: x.batch_size }
+}
+
+fn rms_norm_batched(x: &BatchState, weight: &[f32], eps: f32) -> BatchState {
+    let mut out = BatchState {
+        data: vec![0f32; x.rows * x.batch_size],
+        rows: x.rows,
+        batch_size: x.batch_size,
+    };
+    for seq in 0..x.batch_size {
+        let normed = rms_norm(&x.column(seq), weight, eps);
+        out.set_column(seq, &normed);
+    }
+    out
+}
+
+fn swiglu_mlp_batched(x: &BatchState, w: &LayerWeights) -> BatchState {
+    let gate = linear_batched(&w.ffn_gate, w.ffn_gate_dims, x);
+    let up = linear_batched(&w.ffn_up, w.ffn_up_dims, x);
+
+    let activated = BatchState {
+        data: gate.data.iter().zip(up.data.iter()).map(|(g, u)| silu(*g) * u).collect(),
+        rows: gate.rows,
+        batch_size: gate.batch_size,
+    };
+
+    linear_batched(&w.ffn_down, w.ffn_down_dims, &activated)
+}
+
+// Attention is the one part that cannot be fully batched into a single
+// matmul here: each sequence attends over its own distinct history, so the
+// score computation and weighted sum run per sequence against that
+// sequence's own cache. The Q/K/V projections that feed it are still fully
+// batched, which is where most of the weight-reading cost lives.
+fn attention_batched(
+    x: &BatchState,
+    w: &LayerWeights,
+    cfg: &Config,
+    caches: &mut [&mut LayerCache],
+    positions: &[usize],
+) -> BatchState {
+    let group_size = cfg.n_heads / cfg.n_kv_heads;
+
+    let q_all = linear_batched(&w.attn_q, w.attn_q_dims, x);
+    let k_all = linear_batched(&w.attn_k, w.attn_k_dims, x);
+    let v_all = linear_batched(&w.attn_v, w.attn_v_dims, x);
+
+    let mut head_outputs = BatchState {
+        data: vec![0f32; cfg.n_heads * cfg.head_dim * x.batch_size],
+        rows: cfg.n_heads * cfg.head_dim,
+        batch_size: x.batch_size,
+    };
+
+    for seq in 0..x.batch_size {
+        let pos = positions[seq];
+        let q = q_all.column(seq);
+        let k = k_all.column(seq);
+        let v = v_all.column(seq);
+
+        let mut q_per_head: Vec<Vec<f32>> = (0..cfg.n_heads)
+            .map(|h| q[h * cfg.head_dim..(h + 1) * cfg.head_dim].to_vec())
+            .collect();
+        let mut k_per_head: Vec<Vec<f32>> = (0..cfg.n_kv_heads)
+            .map(|h| k[h * cfg.head_dim..(h + 1) * cfg.head_dim].to_vec())
+            .collect();
+        let v_per_head: Vec<Vec<f32>> = (0..cfg.n_kv_heads)
+            .map(|h| v[h * cfg.head_dim..(h + 1) * cfg.head_dim].to_vec())
+            .collect();
+
+        for qh in q_per_head.iter_mut() {
+            apply_rope(qh, pos, cfg.head_dim);
+        }
+        for kh in k_per_head.iter_mut() {
+            apply_rope(kh, pos, cfg.head_dim);
+        }
+
+        caches[seq].keys.push(k_per_head);
+        caches[seq].values.push(v_per_head);
+
+        let mut seq_out = vec![0f32; cfg.n_heads * cfg.head_dim];
+        for h in 0..cfg.n_heads {
+            let kv_h = h / group_size;
+            let qh = &q_per_head[h];
+
+            let mut scores: Vec<f32> = (0..=pos)
+                .map(|j| {
+                    let kh = &caches[seq].keys[j][kv_h];
+                    let dot: f32 = qh.iter().zip(kh.iter()).map(|(a, b)| a * b).sum();
+                    dot / (cfg.head_dim as f32).sqrt()
+                })
+                .collect();
+
+            softmax(&mut scores);
+
+            let mut weighted_sum = vec![0f32; cfg.head_dim];
+            for (j, &weight) in scores.iter().enumerate() {
+                let vh = &caches[seq].values[j][kv_h];
+                for d in 0..cfg.head_dim {
+                    weighted_sum[d] += weight * vh[d];
+                }
+            }
+
+            seq_out[h * cfg.head_dim..(h + 1) * cfg.head_dim].copy_from_slice(&weighted_sum);
+        }
+
+        head_outputs.set_column(seq, &seq_out);
+    }
+
+    linear_batched(&w.attn_output, w.attn_output_dims, &head_outputs)
+}
+
+fn forward_layer_batched(
+    x: &BatchState,
+    w: &LayerWeights,
+    cfg: &Config,
+    caches: &mut [&mut LayerCache],
+    positions: &[usize],
+) -> BatchState {
+    let normed = rms_norm_batched(x, &w.attn_norm, cfg.rms_eps);
+    let attn_out = attention_batched(&normed, w, cfg, caches, positions);
+
+    let residual1 = BatchState {
+        data: x.data.iter().zip(attn_out.data.iter()).map(|(a, b)| a + b).collect(),
+        rows: x.rows,
+        batch_size: x.batch_size,
+    };
+
+    let normed2 = rms_norm_batched(&residual1, &w.ffn_norm, cfg.rms_eps);
+    let mlp_out = swiglu_mlp_batched(&normed2, w);
+
+    BatchState {
+        data: residual1.data.iter().zip(mlp_out.data.iter()).map(|(a, b)| a + b).collect(),
+        rows: residual1.rows,
+        batch_size: residual1.batch_size,
+    }
+}
+
+// Runs one token per sequence through the whole model, returning logits for
+// each sequence in the batch.
+fn forward_batched(
+    model: &Model,
+    cache: &mut BatchKvCache,
+    token_ids: &[usize],
+    positions: &[usize],
+) -> Vec<Vec<f32>> {
+    let embeddings: Vec<Vec<f32>> = token_ids.iter().map(|&id| embed_token(model, id)).collect();
+    let mut x = BatchState::from_vectors(&embeddings);
+
+    for layer_idx in 0..model.config.n_layers {
+        let mut layer_caches: Vec<&mut LayerCache> = cache
+            .sequences
+            .iter_mut()
+            .map(|seq_cache| &mut seq_cache.layers[layer_idx])
+            .collect();
+
+        x = forward_layer_batched(
+            &x,
+            &model.layers[layer_idx],
+            &model.config,
+            &mut layer_caches,
+            positions,
+        );
+    }
+
+    (0..x.batch_size)
+        .map(|seq| {
+            let normed = rms_norm(&x.column(seq), &model.output_norm, model.config.rms_eps);
+            linear(&model.output_weight, model.output_dims, &normed)
+        })
+        .collect()
+}
+
+// Batched autoregressive generation. All sequences advance in lockstep: one
+// token per sequence per step. Prompts are padded to equal length by
+// truncating to the shortest, which keeps the batch rectangular -- a real
+// serving system would instead use continuous batching to swap finished
+// sequences out and new ones in without stalling the batch.
+pub fn generate_batched(
+    model: &Model,
+    prompts: &[Vec<usize>],
+    n_new_tokens: usize,
+) -> Vec<Vec<usize>> {
+    let batch_size = prompts.len();
+    let mut cache = BatchKvCache::new(batch_size, model.config.n_layers);
+
+    let prompt_len = prompts.iter().map(|p| p.len()).min().expect("empty batch");
+    let mut sequences: Vec<Vec<usize>> = prompts.iter().map(|p| p[..prompt_len].to_vec()).collect();
+
+    let mut logits: Vec<Vec<f32>> = Vec::new();
+
+    for pos in 0..prompt_len {
+        let token_ids: Vec<usize> = sequences.iter().map(|s| s[pos]).collect();
+        let positions = vec![pos; batch_size];
+        logits = forward_batched(model, &mut cache, &token_ids, &positions);
+    }
+
+    for step in 0..n_new_tokens {
+        let next_tokens: Vec<usize> = logits.iter().map(|l| argmax(l)).collect();
+        for (seq, &tok) in next_tokens.iter().enumerate() {
+            sequences[seq].push(tok);
+        }
+
+        let pos = prompt_len + step;
+        let positions = vec![pos; batch_size];
+        logits = forward_batched(model, &mut cache, &next_tokens, &positions);
+    }
+
+    sequences
+}
+
+// Total KV-cache memory across every sequence in a batch.
+pub fn batch_cache_bytes(cache: &BatchKvCache, cfg: &Config) -> usize {
+    cache.memory_bytes(cfg.n_kv_heads, cfg.head_dim)
 }

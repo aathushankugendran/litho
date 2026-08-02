@@ -1,4 +1,6 @@
 export interface ModelInfo {
+  name: string;
+  quantization: string;
   n_layers: number;
   hidden_size: number;
   n_heads: number;

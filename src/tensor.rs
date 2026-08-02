@@ -79,21 +79,101 @@ pub fn load_tensor(path: &str, tensor_data_offset: u64, info: &TensorInfo) -> Ve
     }
 }
 
-// Naive matrix multiply: a is [m x k], b is [k x n], result is [m x n].
-// This is O(m*k*n) with no blocking/SIMD/BLAS — correctness first, speed later.
+// Raw FFI binding to the CBLAS standard's sgemm ("single-precision general
+// matrix multiply") function, provided by Apple's Accelerate framework.
+// This is the same interface llama.cpp itself can call into -- a decades-old,
+// heavily optimized standard for this exact operation.
+#[allow(non_camel_case_types)]
+type CBLAS_ORDER = i32;
+#[allow(non_camel_case_types)]
+type CBLAS_TRANSPOSE = i32;
+
+const CBLAS_ROW_MAJOR: CBLAS_ORDER = 101;
+const CBLAS_NO_TRANS: CBLAS_TRANSPOSE = 111;
+
+    unsafe extern "C" {
+    fn cblas_sgemm(
+        order: CBLAS_ORDER,
+        transa: CBLAS_TRANSPOSE,
+        transb: CBLAS_TRANSPOSE,
+        m: i32,
+        n: i32,
+        k: i32,
+        alpha: f32,
+        a: *const f32,
+        lda: i32,
+        b: *const f32,
+        ldb: i32,
+        beta: f32,
+        c: *mut f32,
+        ldc: i32,
+    );
+}
+
+// Matrix multiply: a is [m x k], b is [k x n], result is [m x n].
+//
+// Delegates to Accelerate's cblas_sgemm rather than a hand-written loop.
+// The hand-written, cache-aware version (matmul_scalar below) already
+// showed batching can scale once memory access is fixed; BLAS goes further,
+// using SIMD instructions to process several floats per CPU cycle and
+// blocking the computation to fit the processor's cache hierarchy far more
+// precisely than a simple loop reorder can.
+//
+// alpha=1, beta=0 means: compute C = A * B exactly, ignoring whatever
+// garbage is currently in C's memory rather than accumulating into it.
 pub fn matmul(a: &[f32], m: usize, k: usize, b: &[f32], n: usize) -> Vec<f32> {
     assert_eq!(a.len(), m * k, "matrix a has wrong length for given dims");
     assert_eq!(b.len(), k * n, "matrix b has wrong length for given dims");
 
     let mut out = vec![0f32; m * n];
+
+    unsafe {
+        cblas_sgemm(
+            CBLAS_ROW_MAJOR,
+            CBLAS_NO_TRANS,
+            CBLAS_NO_TRANS,
+            m as i32,
+            n as i32,
+            k as i32,
+            1.0,
+            a.as_ptr(),
+            k as i32,
+            b.as_ptr(),
+            n as i32,
+            0.0,
+            out.as_mut_ptr(),
+            n as i32,
+        );
+    }
+
+    out
+}
+
+// The hand-written, cache-aware matmul from Milestone 7 stage 1. Kept as a
+// named reference and a correctness cross-check against BLAS -- both
+// should produce identical results, since they compute the same operation.
+pub fn matmul_scalar(a: &[f32], m: usize, k: usize, b: &[f32], n: usize) -> Vec<f32> {
+    assert_eq!(a.len(), m * k, "matrix a has wrong length for given dims");
+    assert_eq!(b.len(), k * n, "matrix b has wrong length for given dims");
+
+    let mut out = vec![0f32; m * n];
+
     for i in 0..m {
-        for j in 0..n {
-            let mut sum = 0f32;
-            for p in 0..k {
-                sum += a[i * k + p] * b[p * n + j];
+        let a_row = &a[i * k..(i + 1) * k];
+        let out_row = &mut out[i * n..(i + 1) * n];
+
+        for p in 0..k {
+            let a_val = a_row[p];
+            if a_val == 0.0 {
+                continue;
             }
-            out[i * n + j] = sum;
+            let b_row = &b[p * n..(p + 1) * n];
+
+            for j in 0..n {
+                out_row[j] += a_val * b_row[j];
+            }
         }
     }
+
     out
 }

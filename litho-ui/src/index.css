@@ -21,3 +21,11 @@ body {
   font-family: "IBM Plex Mono", monospace;
   font-variant-numeric: tabular-nums;
 }
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
