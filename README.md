@@ -6,6 +6,10 @@ Every numerical component in this project is independently verified against a tr
 
 **Live dashboard:** [litho](https://main.d2jztxcsysdow0.amplifyapp.com/) (React/TypeScript, streams generation in real time)
 
+## About the name
+
+*Litho* comes from the Greek *lithos*, meaning stone — the bedrock something is built on. This project is the ground floor: no PyTorch, no inference libraries, no framework standing between the code and the math. Every layer of the transformer, every byte of the GGUF file, every optimization pass was written by hand, so the foundation itself is fully understood rather than borrowed.
+
 ---
 
 ## Table of contents
